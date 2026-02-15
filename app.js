@@ -17,7 +17,7 @@
  * IMPORTANTE: Usar la URL que termina en /exec (NO /dev).
  * Ejemplo: https://script.google.com/macros/s/AKfycb.../exec
  */
-const API_URL = 'TU_WEBAPP_URL_AQUI';
+const API_URL = 'https://script.google.com/macros/s/AKfycbwQaPVLdJ58LYmk6rmuRkB4yzZilqr09r8XIdO3moe3oyIlUlZC0NdaxCFlJfUa8DSfXQ/exec';
 
 // ============================================================
 // ESTADO DE LA APLICACIÓN
