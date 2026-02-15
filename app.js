@@ -858,14 +858,10 @@ const API = {
           redirect: 'follow'
         });
       } else {
-        // POST para uploadInvoice:
-        // 1. Primero hacer un ping GET para obtener la URL final (después del redirect 302)
-        // 2. Luego POST directo a esa URL final
-        const pingUrl = `${API_URL}?action=ping`;
-        const pingResp = await fetch(pingUrl, { method: 'GET', redirect: 'follow' });
-        const finalUrl = pingResp.url; // URL real después del redirect
-
-        response = await fetch(finalUrl, {
+        // POST directo a /exec con Content-Type text/plain (evita preflight CORS).
+        // Apps Script procesa el body en doPost() y el 302 redirect solo
+        // aplica para entregar la respuesta, no afecta el procesamiento.
+        response = await fetch(API_URL, {
           method: 'POST',
           redirect: 'follow',
           headers: { 'Content-Type': 'text/plain' },

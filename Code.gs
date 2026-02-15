@@ -608,6 +608,51 @@ function handleCreateSupplier(params) {
   });
 }
 // ============================================================
+// REGISTRO DE ADMIN - Ejecutar desde el editor de Apps Script
+// ============================================================
+/**
+ * Crea un usuario administrador.
+ *
+ * USO: Desde el editor de Apps Script, selecciona esta función
+ *      en el dropdown y haz click en Ejecutar (▶).
+ *      Revisa los logs (Ver > Registros) para confirmar.
+ *
+ * EDITA el correo y contraseña antes de ejecutar.
+ */
+function registerAdmin() {
+  // ---- EDITAR ESTOS VALORES ----
+  var correo = 'cxp@ejecutivaambiental.com';
+  var password = 'qwerty34161';
+  // -------------------------------
+
+  // Verificar que no exista
+  var existing = findUserByEmail(correo);
+  if (existing) {
+    Logger.log('ERROR: Ya existe un usuario con el correo: ' + correo);
+    Logger.log('Si necesitas cambiar la contraseña, elimina la fila del usuario en la hoja USERS y vuelve a ejecutar.');
+    return;
+  }
+
+  var userId = Utilities.getUuid();
+  insertUser({
+    userId: userId,
+    supplierId: '',
+    correo: correo,
+    hash: hashPassword(password),
+    rol: 'admin',
+    activo: 'true',
+    lastLogin: '',
+    tokenSesion: '',
+    tokenExpiry: '',
+    createdAt: new Date().toISOString()
+  });
+
+  Logger.log('=== ADMIN CREADO EXITOSAMENTE ===');
+  Logger.log('Correo: ' + correo);
+  Logger.log('Contraseña: ' + password);
+  Logger.log('Ya puedes iniciar sesión en el portal.');
+}
+// ============================================================
 // Formatear fecha como YYYY-MM-DD
 // ============================================================
 function formatDate(date) {
