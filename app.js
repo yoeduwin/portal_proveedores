@@ -841,14 +841,15 @@ const API = {
     }
 
     // Determinar si es GET o POST
-    // POST para: login, uploadInvoice, updateInvoiceStatus, createSupplier
-    const postActions = ['login', 'uploadInvoice', 'updateInvoiceStatus', 'createSupplier'];
-    const method = postActions.includes(action) ? 'POST' : 'GET';
+    // POST solo para uploadInvoice (requiere enviar archivos base64 en body)
+    // Todo lo demás va como GET (parámetros en URL, sobrevive al redirect 302)
+    const usePost = action === 'uploadInvoice';
 
     try {
       let response;
 
-      if (method === 'GET') {
+      if (!usePost) {
+        // GET: parámetros en la URL, funciona con el redirect 302 de Apps Script
         const queryString = Object.entries(params)
           .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
           .join('&');
@@ -857,7 +858,14 @@ const API = {
           redirect: 'follow'
         });
       } else {
-        response = await fetch(API_URL, {
+        // POST para uploadInvoice:
+        // 1. Primero hacer un ping GET para obtener la URL final (después del redirect 302)
+        // 2. Luego POST directo a esa URL final
+        const pingUrl = `${API_URL}?action=ping`;
+        const pingResp = await fetch(pingUrl, { method: 'GET', redirect: 'follow' });
+        const finalUrl = pingResp.url; // URL real después del redirect
+
+        response = await fetch(finalUrl, {
           method: 'POST',
           redirect: 'follow',
           headers: { 'Content-Type': 'text/plain' },
