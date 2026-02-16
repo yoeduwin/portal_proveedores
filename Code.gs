@@ -138,6 +138,17 @@ function handleRequest(e, method) {
       case 'createSupplier':
         requireAdmin(session);
         return handleCreateSupplier(params);
+      case 'deleteSupplier':
+        requireAdmin(session);
+        return handleDeleteSupplier(params);
+      case 'adminUploadInvoice':
+        requireAdmin(session);
+        return handleAdminUploadInvoice(params, e);
+      case 'registerPartialPayment':
+        requireAdmin(session);
+        return handleRegisterPartialPayment(params);
+      case 'getInvoicePayments':
+        return handleGetInvoicePayments(params);
       default:
         return errorResponse('Acción no reconocida: ' + action, 400);
     }
@@ -445,7 +456,7 @@ function handleUpdateInvoiceStatus(params) {
   if (!invoiceId || !nuevoEstatus) {
     return errorResponse('ID de factura y nuevo estatus son obligatorios.', 400);
   }
-  var estatusValidos = ['Programado', 'Pagado', 'Rechazado', 'En revisión'];
+  var estatusValidos = ['Programado', 'Pagado', 'Rechazado', 'En revisión', 'Pago parcial'];
   if (estatusValidos.indexOf(nuevoEstatus) === -1) {
     return errorResponse('Estatus no válido. Opciones: ' + estatusValidos.join(', '), 400);
   }
@@ -543,6 +554,14 @@ function handleGetDashboardStats(params) {
         stats.enRevision++;
         stats.montoPendiente += total;
         break;
+      case 'Pago parcial':
+        stats.programadas++;
+        stats.montoPendiente += total;
+        var fechaPagoParcial = new Date(inv.fechaPagoProgramada);
+        var diffDaysParcial = (fechaPagoParcial - today) / (1000 * 60 * 60 * 24);
+        if (diffDaysParcial >= 0 && diffDaysParcial <= 7) stats.porPagarEstaSemana++;
+        if (diffDaysParcial < 0) stats.vencidas++;
+        break;
     }
   });
   return successResponse({ stats: stats });
@@ -606,6 +625,323 @@ function handleCreateSupplier(params) {
     message: 'Proveedor creado exitosamente.',
     supplier: supplierData
   });
+}
+// ============================================================
+// HANDLERS - Admin: Eliminar proveedor
+// ============================================================
+function handleDeleteSupplier(params) {
+  var user = params._user;
+  var supplierId = params.supplierId;
+  if (!supplierId) {
+    return errorResponse('ID de proveedor requerido.', 400);
+  }
+  var supplier = findSupplierById(supplierId);
+  if (!supplier) {
+    return errorResponse('Proveedor no encontrado.', 404);
+  }
+  // Verificar que no tenga facturas
+  var invoices = getInvoicesBySupplier(supplierId);
+  if (invoices.length > 0) {
+    return errorResponse('No se puede eliminar: el proveedor tiene ' + invoices.length + ' factura(s) registrada(s). Elimina las facturas primero.', 409);
+  }
+  // Eliminar usuario asociado
+  deleteUserBySupplier(supplierId);
+  // Eliminar proveedor
+  deleteSupplier(supplierId);
+  // Log de auditoría
+  logAudit(user.correo, 'DELETE_SUPPLIER', '', 'Proveedor eliminado: ' + supplier.nombre + ' (' + supplier.RFC + ')');
+  return successResponse({ message: 'Proveedor "' + supplier.nombre + '" eliminado.' });
+}
+// ============================================================
+// HANDLERS - Admin: Subir factura en nombre de un proveedor
+// ============================================================
+function handleAdminUploadInvoice(params, e) {
+  var user = params._user;
+  var supplierId = params.supplierId;
+  if (!supplierId) {
+    return errorResponse('Debes seleccionar un proveedor.', 400);
+  }
+  var supplier = findSupplierById(supplierId);
+  if (!supplier) {
+    return errorResponse('Proveedor no encontrado.', 404);
+  }
+  // Validar XML
+  var xmlBase64 = params.xmlFile;
+  var pdfBase64 = params.pdfFile || null;
+  var xmlFileName = params.xmlFileName || 'factura.xml';
+  var pdfFileName = params.pdfFileName || 'factura.pdf';
+  var observaciones = params.observaciones || '';
+  if (!xmlBase64) {
+    return errorResponse('El archivo XML CFDI es obligatorio.', 400);
+  }
+  var xmlContent;
+  try {
+    xmlContent = Utilities.newBlob(Utilities.base64Decode(xmlBase64)).getDataAsString();
+  } catch (err) {
+    return errorResponse('Error al leer el archivo XML.', 400);
+  }
+  var cfdiData = parseCFDI(xmlContent);
+  if (!cfdiData.valid) {
+    return errorResponse('El archivo XML no es un CFDI válido: ' + cfdiData.error, 400);
+  }
+  if (isDuplicateUUID(cfdiData.uuid)) {
+    return errorResponse('Factura ya registrada (UUID duplicado: ' + cfdiData.uuid + ').', 409);
+  }
+  var fechaRecepcion = new Date();
+  var fechaPago = computePaymentDate(fechaRecepcion);
+  var folioInterno = generateFolio();
+  var driveFiles = saveFilesToDrive(supplier, xmlBase64, xmlFileName, pdfBase64, pdfFileName, folioInterno);
+  var invoiceId = Utilities.getUuid();
+  var invoiceData = {
+    invoiceId: invoiceId,
+    supplierId: supplierId,
+    folioInterno: folioInterno,
+    uuid: cfdiData.uuid,
+    rfcEmisor: cfdiData.rfcEmisor,
+    nombreEmisor: cfdiData.nombreEmisor,
+    fechaEmision: cfdiData.fechaEmision,
+    total: cfdiData.total,
+    moneda: cfdiData.moneda,
+    fechaRecepcion: fechaRecepcion.toISOString(),
+    fechaPagoProgramada: formatDate(fechaPago),
+    estatus: 'Programado',
+    driveXmlId: driveFiles.xmlId,
+    drivePdfId: driveFiles.pdfId || '',
+    observaciones: observaciones + (observaciones ? ' | ' : '') + 'Subida por admin: ' + user.correo,
+    rechazoMotivo: '',
+    fechaPagoReal: '',
+    referenciaPago: '',
+    createdAt: new Date().toISOString()
+  };
+  insertInvoice(invoiceData);
+  logAudit(user.correo, 'ADMIN_UPLOAD_INVOICE', invoiceId,
+    'Factura subida por admin para proveedor ' + supplier.nombre + ': ' + folioInterno);
+  try {
+    sendInvoiceConfirmationToSupplier(invoiceData, supplier);
+  } catch (emailErr) {
+    Logger.log('Error enviando correo: ' + emailErr.message);
+  }
+  var acuse = {
+    folioInterno: folioInterno,
+    uuid: cfdiData.uuid,
+    total: cfdiData.total,
+    moneda: cfdiData.moneda,
+    fechaPagoProgramada: formatDate(fechaPago),
+    fechaRecepcion: fechaRecepcion.toISOString(),
+    estatus: 'Programado',
+    rfcEmisor: cfdiData.rfcEmisor,
+    nombreEmisor: cfdiData.nombreEmisor
+  };
+  return successResponse({ message: 'Factura registrada para ' + supplier.nombre + '.', acuse: acuse });
+}
+// ============================================================
+// HANDLERS - Admin: Registrar pago parcial
+// ============================================================
+function handleRegisterPartialPayment(params) {
+  var user = params._user;
+  var invoiceId = params.invoiceId;
+  var montoParcial = params.montoParcial;
+  var referencia = params.referencia || '';
+  var fechaPago = params.fechaPago || formatDate(new Date());
+  var comprobante = params.comprobante || null;
+  var comprobanteFileName = params.comprobanteFileName || 'comprobante.pdf';
+  if (!invoiceId || !montoParcial) {
+    return errorResponse('ID de factura y monto son obligatorios.', 400);
+  }
+  var monto = parseFloat(montoParcial);
+  if (isNaN(monto) || monto <= 0) {
+    return errorResponse('El monto debe ser un número mayor a 0.', 400);
+  }
+  var invoice = findInvoiceById(invoiceId);
+  if (!invoice) {
+    return errorResponse('Factura no encontrada.', 404);
+  }
+  // Calcular saldo pendiente
+  var totalFactura = parseFloat(invoice.total) || 0;
+  var pagosAnteriores = getPaymentsByInvoice(invoiceId);
+  var totalPagado = 0;
+  pagosAnteriores.forEach(function(p) { totalPagado += parseFloat(p.monto) || 0; });
+  var saldoPendiente = totalFactura - totalPagado;
+  if (monto > saldoPendiente + 0.01) {
+    return errorResponse('El monto ($' + monto.toFixed(2) + ') excede el saldo pendiente ($' + saldoPendiente.toFixed(2) + ').', 400);
+  }
+  // Guardar comprobante en Drive si viene
+  var driveComprobanteId = '';
+  if (comprobante) {
+    try {
+      var supplier = findSupplierById(invoice.supplierId);
+      var folder = DriveApp.getFolderById(supplier.carpetaDriveId);
+      var blob = Utilities.newBlob(Utilities.base64Decode(comprobante), 'application/pdf',
+        'comprobante_' + invoice.folioInterno + '_pago' + (pagosAnteriores.length + 1) + '.pdf');
+      var file = folder.createFile(blob);
+      driveComprobanteId = file.getId();
+    } catch (err) {
+      Logger.log('Error guardando comprobante: ' + err.message);
+    }
+  }
+  // Registrar pago parcial
+  var paymentId = Utilities.getUuid();
+  insertPayment({
+    paymentId: paymentId,
+    invoiceId: invoiceId,
+    monto: monto.toFixed(2),
+    fechaPago: fechaPago,
+    referencia: referencia,
+    driveComprobanteId: driveComprobanteId,
+    registradoPor: user.correo,
+    createdAt: new Date().toISOString()
+  });
+  // Actualizar estatus de la factura
+  var nuevoTotalPagado = totalPagado + monto;
+  var nuevoEstatus;
+  if (nuevoTotalPagado >= totalFactura - 0.01) {
+    nuevoEstatus = 'Pagado';
+    updateInvoice(invoiceId, {
+      estatus: 'Pagado',
+      fechaPagoReal: fechaPago,
+      referenciaPago: referencia
+    });
+  } else {
+    nuevoEstatus = 'Pago parcial';
+    updateInvoice(invoiceId, { estatus: 'Pago parcial' });
+  }
+  logAudit(user.correo, 'PARTIAL_PAYMENT', invoiceId,
+    'Pago parcial $' + monto.toFixed(2) + ' | Acumulado: $' + nuevoTotalPagado.toFixed(2) +
+    ' de $' + totalFactura.toFixed(2) + ' | Ref: ' + referencia);
+  // Notificar al proveedor
+  var supplier = findSupplierById(invoice.supplierId);
+  try {
+    sendPartialPaymentToSupplier(invoice, supplier, monto, nuevoTotalPagado, totalFactura, referencia);
+  } catch (emailErr) {
+    Logger.log('Error enviando correo de pago parcial: ' + emailErr.message);
+  }
+  return successResponse({
+    message: nuevoEstatus === 'Pagado'
+      ? 'Pago registrado. Factura liquidada al 100%.'
+      : 'Pago parcial registrado. Saldo pendiente: $' + (totalFactura - nuevoTotalPagado).toFixed(2),
+    payment: {
+      monto: monto.toFixed(2),
+      totalPagado: nuevoTotalPagado.toFixed(2),
+      totalFactura: totalFactura.toFixed(2),
+      saldoPendiente: (totalFactura - nuevoTotalPagado).toFixed(2),
+      estatus: nuevoEstatus
+    }
+  });
+}
+// ============================================================
+// HANDLERS - Obtener pagos de una factura
+// ============================================================
+function handleGetInvoicePayments(params) {
+  var invoiceId = params.invoiceId;
+  if (!invoiceId) {
+    return errorResponse('ID de factura requerido.', 400);
+  }
+  var invoice = findInvoiceById(invoiceId);
+  if (!invoice) {
+    return errorResponse('Factura no encontrada.', 404);
+  }
+  // Proveedor solo puede ver sus propias facturas
+  var user = params._user;
+  if (user.rol === 'supplier' && invoice.supplierId !== user.supplierId) {
+    return errorResponse('No tienes acceso.', 403);
+  }
+  var payments = getPaymentsByInvoice(invoiceId);
+  var totalPagado = 0;
+  payments.forEach(function(p) {
+    totalPagado += parseFloat(p.monto) || 0;
+    if (p.driveComprobanteId) {
+      p.comprobanteUrl = 'https://drive.google.com/uc?export=download&id=' + p.driveComprobanteId;
+    }
+  });
+  return successResponse({
+    payments: payments,
+    totalPagado: totalPagado.toFixed(2),
+    totalFactura: invoice.total,
+    saldoPendiente: (parseFloat(invoice.total) - totalPagado).toFixed(2)
+  });
+}
+// ============================================================
+// Email: Notificar pago parcial al proveedor
+// ============================================================
+function sendPartialPaymentToSupplier(invoice, supplier, montoPago, totalPagado, totalFactura, referencia) {
+  if (!supplier || !supplier.correo) return;
+  var saldo = totalFactura - totalPagado;
+  var subject = CONFIG.COMPANY_NAME + ' - Pago parcial registrado: ' + invoice.folioInterno;
+  var body = 'Estimado proveedor ' + supplier.nombre + ',\n\n' +
+    'Se ha registrado un pago parcial para su factura:\n\n' +
+    'Folio: ' + invoice.folioInterno + '\n' +
+    'UUID: ' + invoice.uuid + '\n' +
+    'Monto del pago: $' + parseFloat(montoPago).toFixed(2) + '\n' +
+    'Total acumulado: $' + parseFloat(totalPagado).toFixed(2) + '\n' +
+    'Total factura: $' + parseFloat(totalFactura).toFixed(2) + '\n' +
+    'Saldo pendiente: $' + saldo.toFixed(2) + '\n' +
+    'Referencia: ' + (referencia || 'N/A') + '\n\n' +
+    (saldo <= 0.01 ? 'Su factura ha sido liquidada al 100%.\n\n' : '') +
+    'Consulta el detalle en: ' + CONFIG.FRONTEND_URL + '\n\n' +
+    'Saludos,\n' + CONFIG.COMPANY_NAME;
+  MailApp.sendEmail(supplier.correo, subject, body);
+}
+// ============================================================
+// Database helpers: PAYMENTS sheet
+// ============================================================
+function ensurePaymentsSheet() {
+  var ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  var sheet = ss.getSheetByName('PAYMENTS');
+  if (!sheet) {
+    sheet = ss.insertSheet('PAYMENTS');
+    var headers = ['paymentId', 'invoiceId', 'monto', 'fechaPago', 'referencia', 'driveComprobanteId', 'registradoPor', 'createdAt'];
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+  }
+  return sheet;
+}
+function insertPayment(data) {
+  var sheet = ensurePaymentsSheet();
+  sheet.appendRow([
+    data.paymentId, data.invoiceId, data.monto, data.fechaPago,
+    data.referencia, data.driveComprobanteId, data.registradoPor, data.createdAt
+  ]);
+}
+function getPaymentsByInvoice(invoiceId) {
+  var sheet = ensurePaymentsSheet();
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0];
+  var payments = [];
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][1] === invoiceId) {
+      var obj = {};
+      for (var j = 0; j < headers.length; j++) {
+        obj[headers[j]] = data[i][j];
+      }
+      payments.push(obj);
+    }
+  }
+  return payments;
+}
+// ============================================================
+// Database helpers: Delete supplier / user
+// ============================================================
+function deleteSupplier(supplierId) {
+  var ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(CONFIG.SHEETS.SUPPLIERS);
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === supplierId) {
+      sheet.deleteRow(i + 1);
+      return;
+    }
+  }
+}
+function deleteUserBySupplier(supplierId) {
+  var ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(CONFIG.SHEETS.USERS);
+  var data = sheet.getDataRange().getValues();
+  // Eliminar de abajo hacia arriba para no alterar índices
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (data[i][1] === supplierId) {
+      sheet.deleteRow(i + 1);
+    }
+  }
 }
 // ============================================================
 // REGISTRO DE ADMIN - Ejecutar desde el editor de Apps Script
