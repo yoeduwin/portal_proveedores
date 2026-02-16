@@ -270,6 +270,7 @@
                 <option value="Pagado">Pagado</option>
                 <option value="Rechazado">Rechazado</option>
                 <option value="En revisión">En revisión</option>
+                <option value="Pago parcial">Pago parcial</option>
               </select>
             </div>
             <div class="col-md-2">
@@ -350,10 +351,66 @@
                   <th>Teléfono</th>
                   <th>Estado</th>
                   <th>Creado</th>
+                  <th>Acciones</th>
                 </tr>
               </thead>
               <tbody id="suppliersBody"></tbody>
             </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== ADMIN: SUBIR FACTURA POR PROVEEDOR ===== -->
+    <div id="viewAdminUpload" class="view d-none">
+      <div class="row justify-content-center">
+        <div class="col-lg-8">
+          <div class="card shadow">
+            <div class="card-header bg-ea-green text-white">
+              <h5 class="mb-0"><i class="bi bi-cloud-upload"></i> Subir Factura (Admin)</h5>
+            </div>
+            <div class="card-body">
+              <div id="adminUploadError" class="alert alert-danger d-none"></div>
+              <div id="adminUploadSuccess" class="alert alert-success d-none"></div>
+              <form id="adminUploadForm" onsubmit="App.handleAdminUpload(event)">
+                <div class="mb-3">
+                  <label class="form-label fw-bold">
+                    Proveedor <span class="text-danger">*</span>
+                  </label>
+                  <select class="form-select" id="adminUploadSupplier" required>
+                    <option value="">Seleccionar proveedor...</option>
+                  </select>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label fw-bold">
+                    Archivo XML CFDI <span class="text-danger">*</span>
+                  </label>
+                  <input type="file" class="form-control" id="adminXmlFile" accept=".xml" required>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label fw-bold">Archivo PDF (opcional)</label>
+                  <input type="file" class="form-control" id="adminPdfFile" accept=".pdf">
+                </div>
+                <div class="mb-3">
+                  <label class="form-label fw-bold">Observaciones (opcional)</label>
+                  <textarea class="form-control" id="adminObservaciones" rows="2" maxlength="500"
+                    placeholder="Notas adicionales..."></textarea>
+                </div>
+                <button type="submit" class="btn btn-ea-green" id="adminUploadBtn">
+                  <i class="bi bi-send"></i> Registrar Factura
+                </button>
+              </form>
+            </div>
+          </div>
+
+          <!-- ACUSE Admin -->
+          <div id="adminAcuseContainer" class="d-none mt-4">
+            <div class="card shadow border-success">
+              <div class="card-header bg-success text-white">
+                <h5 class="mb-0"><i class="bi bi-check-circle"></i> Acuse de Recibo</h5>
+              </div>
+              <div class="card-body" id="adminAcuseBody"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -444,6 +501,80 @@
             <button type="button" class="btn btn-ea-green" onclick="App.submitStatusChange()" id="csBtn">
               Guardar Cambio
             </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Pago Parcial -->
+    <div class="modal fade" id="partialPaymentModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header bg-ea-green text-white">
+            <h5 class="modal-title"><i class="bi bi-cash-stack"></i> Registrar Pago Parcial</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div id="ppError" class="alert alert-danger d-none"></div>
+            <input type="hidden" id="ppInvoiceId">
+            <div class="mb-3 p-2 bg-light rounded">
+              <div class="d-flex justify-content-between">
+                <span>Folio:</span><strong id="ppFolio"></strong>
+              </div>
+              <div class="d-flex justify-content-between">
+                <span>Total factura:</span><strong id="ppTotalFactura"></strong>
+              </div>
+              <div class="d-flex justify-content-between">
+                <span>Ya pagado:</span><strong id="ppTotalPagado" class="text-success"></strong>
+              </div>
+              <div class="d-flex justify-content-between">
+                <span>Saldo pendiente:</span><strong id="ppSaldo" class="text-danger"></strong>
+              </div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Monto del pago <span class="text-danger">*</span></label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control" id="ppMonto" step="0.01" min="0.01" required>
+              </div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Fecha del pago</label>
+              <input type="date" class="form-control" id="ppFechaPago">
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Referencia bancaria</label>
+              <input type="text" class="form-control" id="ppReferencia" placeholder="Ej: SPEI-123456">
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Comprobante de pago (PDF, opcional)</label>
+              <input type="file" class="form-control" id="ppComprobante" accept=".pdf">
+              <div class="form-text">Se guarda en la carpeta del proveedor en Drive.</div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+            <button type="button" class="btn btn-ea-green" onclick="App.submitPartialPayment()" id="ppBtn">
+              <i class="bi bi-cash-stack"></i> Registrar Pago
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Historial de Pagos -->
+    <div class="modal fade" id="paymentsHistoryModal" tabindex="-1">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header bg-ea-green text-white">
+            <h5 class="modal-title"><i class="bi bi-clock-history"></i> Historial de Pagos</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body" id="paymentsHistoryBody">
+            <div class="text-center py-4"><div class="spinner-border text-success"></div></div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
           </div>
         </div>
       </div>

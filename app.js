@@ -84,6 +84,11 @@ const App = {
           <a class="nav-link" href="#" onclick="App.navigate('suppliers')">
             <i class="bi bi-people"></i> Proveedores
           </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="#" onclick="App.navigate('adminUpload')">
+            <i class="bi bi-cloud-upload"></i> Subir Factura
+          </a>
         </li>`;
     }
   },
@@ -100,6 +105,7 @@ const App = {
       case 'myInvoices': this.loadMyInvoices(); break;
       case 'dashboard': this.loadDashboard(); break;
       case 'suppliers': this.loadSuppliers(); break;
+      case 'adminUpload': this.loadAdminUploadSuppliers(); break;
     }
   },
 
@@ -427,8 +433,12 @@ const App = {
             <i class="bi bi-file-earmark-pdf"></i> Descargar PDF</a> ` + footerHtml;
         }
 
-        // Botón cambiar estatus (solo admin)
+        // Botones admin: cambiar estatus, pago parcial, historial
         if (State.user?.rol === 'admin') {
+          footerHtml = `<button class="btn btn-info btn-sm" onclick="App.viewPaymentsHistory('${inv.invoiceId}')">
+            <i class="bi bi-clock-history"></i> Pagos</button> ` + footerHtml;
+          footerHtml = `<button class="btn btn-success btn-sm" onclick="App.openPartialPayment('${inv.invoiceId}', '${inv.folioInterno}', '${inv.total}')">
+            <i class="bi bi-cash-stack"></i> Pago Parcial</button> ` + footerHtml;
           footerHtml = `<button class="btn btn-warning btn-sm" onclick="App.openChangeStatus('${inv.invoiceId}', '${inv.folioInterno}', '${inv.estatus}')">
             <i class="bi bi-pencil-square"></i> Cambiar Estatus</button> ` + footerHtml;
         }
@@ -521,6 +531,12 @@ const App = {
               <button class="btn btn-outline-warning btn-sm" onclick="App.openChangeStatus('${inv.invoiceId}', '${inv.folioInterno}', '${inv.estatus}')" title="Cambiar estatus">
                 <i class="bi bi-pencil-square"></i>
               </button>
+              <button class="btn btn-outline-success btn-sm" onclick="App.openPartialPayment('${inv.invoiceId}', '${inv.folioInterno}', '${inv.total}')" title="Pago parcial">
+                <i class="bi bi-cash-stack"></i>
+              </button>
+              <button class="btn btn-outline-info btn-sm" onclick="App.viewPaymentsHistory('${inv.invoiceId}')" title="Historial de pagos">
+                <i class="bi bi-clock-history"></i>
+              </button>
             </td>
           </tr>`).join('');
         table.style.display = '';
@@ -583,6 +599,12 @@ const App = {
               </button>
               <button class="btn btn-outline-warning btn-sm" onclick="App.openChangeStatus('${inv.invoiceId}', '${inv.folioInterno}', '${inv.estatus}')">
                 <i class="bi bi-pencil-square"></i>
+              </button>
+              <button class="btn btn-outline-success btn-sm" onclick="App.openPartialPayment('${inv.invoiceId}', '${inv.folioInterno}', '${inv.total}')" title="Pago parcial">
+                <i class="bi bi-cash-stack"></i>
+              </button>
+              <button class="btn btn-outline-info btn-sm" onclick="App.viewPaymentsHistory('${inv.invoiceId}')" title="Historial pagos">
+                <i class="bi bi-clock-history"></i>
               </button>
             </td>
           </tr>`).join('');
@@ -726,6 +748,11 @@ const App = {
               ? '<span class="badge bg-success">Activo</span>'
               : '<span class="badge bg-secondary">Inactivo</span>'}</td>
             <td>${formatDateTime(s.createdAt)}</td>
+            <td>
+              <button class="btn btn-outline-danger btn-sm" onclick="App.deleteSupplier('${s.supplierId}', '${s.nombre.replace(/'/g, "\\'")}')" title="Eliminar proveedor">
+                <i class="bi bi-trash"></i>
+              </button>
+            </td>
           </tr>`).join('');
         table.style.display = '';
       }
@@ -770,6 +797,275 @@ const App = {
     } finally {
       btn.disabled = false;
       btn.innerHTML = '<i class="bi bi-save"></i> Crear Proveedor';
+    }
+  },
+
+  // --------------------------------------------------------
+  // ADMIN: ELIMINAR PROVEEDOR
+  // --------------------------------------------------------
+  async deleteSupplier(supplierId, nombre) {
+    if (!confirm('¿Eliminar al proveedor "' + nombre + '"?\n\nSolo se puede eliminar si no tiene facturas registradas.')) {
+      return;
+    }
+    this.showLoading('Eliminando proveedor...');
+    try {
+      const data = await API.call('deleteSupplier', { supplierId });
+      if (data.success) {
+        this.toast(data.data.message, 'success');
+        this.loadSuppliers();
+        this.loadSupplierFilter();
+      } else {
+        this.toast(data.error, 'danger');
+      }
+    } catch (err) {
+      this.toast('Error de conexión.', 'danger');
+    } finally {
+      this.hideLoading();
+    }
+  },
+
+  // --------------------------------------------------------
+  // ADMIN: SUBIR FACTURA POR PROVEEDOR
+  // --------------------------------------------------------
+  async loadAdminUploadSuppliers() {
+    try {
+      const data = await API.call('getSuppliers');
+      if (data.success) {
+        const select = document.getElementById('adminUploadSupplier');
+        select.innerHTML = '<option value="">Seleccionar proveedor...</option>';
+        data.data.suppliers.forEach(s => {
+          select.innerHTML += `<option value="${s.supplierId}">${s.nombre} (${s.RFC})</option>`;
+        });
+      }
+    } catch (err) {
+      console.error('Error cargando proveedores para upload admin:', err);
+    }
+  },
+
+  async handleAdminUpload(e) {
+    e.preventDefault();
+    const supplierId = document.getElementById('adminUploadSupplier').value;
+    const xmlInput = document.getElementById('adminXmlFile');
+    const pdfInput = document.getElementById('adminPdfFile');
+    const obs = document.getElementById('adminObservaciones').value;
+    const btn = document.getElementById('adminUploadBtn');
+    const errorDiv = document.getElementById('adminUploadError');
+    const successDiv = document.getElementById('adminUploadSuccess');
+
+    errorDiv.classList.add('d-none');
+    successDiv.classList.add('d-none');
+    document.getElementById('adminAcuseContainer').classList.add('d-none');
+
+    if (!supplierId) {
+      errorDiv.textContent = 'Selecciona un proveedor.';
+      errorDiv.classList.remove('d-none');
+      return;
+    }
+    if (!xmlInput.files[0]) {
+      errorDiv.textContent = 'Selecciona un archivo XML.';
+      errorDiv.classList.remove('d-none');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Enviando...';
+    this.showLoading('Subiendo factura...');
+
+    try {
+      const xmlBase64 = await this.fileToBase64(xmlInput.files[0]);
+      const pdfBase64 = pdfInput.files[0] ? await this.fileToBase64(pdfInput.files[0]) : null;
+
+      const params = {
+        supplierId,
+        xmlFile: xmlBase64,
+        xmlFileName: xmlInput.files[0].name,
+        observaciones: obs
+      };
+      if (pdfBase64) {
+        params.pdfFile = pdfBase64;
+        params.pdfFileName = pdfInput.files[0].name;
+      }
+
+      const data = await API.call('adminUploadInvoice', params);
+
+      if (data.success) {
+        successDiv.textContent = data.data.message;
+        successDiv.classList.remove('d-none');
+        if (data.data.acuse) {
+          this.renderAdminAcuse(data.data.acuse);
+        }
+        document.getElementById('adminUploadForm').reset();
+      } else {
+        errorDiv.textContent = data.error || 'Error al subir la factura.';
+        errorDiv.classList.remove('d-none');
+      }
+    } catch (err) {
+      errorDiv.textContent = 'Error de conexión: ' + err.message;
+      errorDiv.classList.remove('d-none');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-send"></i> Registrar Factura';
+      this.hideLoading();
+    }
+  },
+
+  renderAdminAcuse(acuse) {
+    const container = document.getElementById('adminAcuseContainer');
+    const body = document.getElementById('adminAcuseBody');
+    body.innerHTML = `
+      <table class="table table-bordered mb-0">
+        <tr><th style="width:40%">Folio Interno</th><td><strong>${acuse.folioInterno}</strong></td></tr>
+        <tr><th>UUID</th><td style="font-size:0.85em; word-break:break-all;">${acuse.uuid}</td></tr>
+        <tr><th>RFC Emisor</th><td>${acuse.rfcEmisor}</td></tr>
+        <tr><th>Total</th><td><strong>$${formatMoney(acuse.total)} ${acuse.moneda}</strong></td></tr>
+        <tr><th>Pago Programado</th><td><strong class="text-success">${acuse.fechaPagoProgramada}</strong></td></tr>
+      </table>`;
+    container.classList.remove('d-none');
+    container.scrollIntoView({ behavior: 'smooth' });
+  },
+
+  // --------------------------------------------------------
+  // ADMIN: PAGO PARCIAL
+  // --------------------------------------------------------
+  async openPartialPayment(invoiceId, folio, total) {
+    // Cerrar modal de detalle si está abierto
+    const detailModal = bootstrap.Modal.getInstance(document.getElementById('invoiceDetailModal'));
+    if (detailModal) detailModal.hide();
+
+    document.getElementById('ppInvoiceId').value = invoiceId;
+    document.getElementById('ppFolio').textContent = folio;
+    document.getElementById('ppTotalFactura').textContent = '$' + formatMoney(total);
+    document.getElementById('ppMonto').value = '';
+    document.getElementById('ppFechaPago').value = new Date().toISOString().split('T')[0];
+    document.getElementById('ppReferencia').value = '';
+    document.getElementById('ppComprobante').value = '';
+    document.getElementById('ppError').classList.add('d-none');
+
+    // Cargar pagos previos
+    try {
+      const data = await API.call('getInvoicePayments', { invoiceId });
+      if (data.success) {
+        document.getElementById('ppTotalPagado').textContent = '$' + formatMoney(data.data.totalPagado);
+        document.getElementById('ppSaldo').textContent = '$' + formatMoney(data.data.saldoPendiente);
+      }
+    } catch (err) {
+      document.getElementById('ppTotalPagado').textContent = '$0.00';
+      document.getElementById('ppSaldo').textContent = '$' + formatMoney(total);
+    }
+
+    const modal = new bootstrap.Modal(document.getElementById('partialPaymentModal'));
+    modal.show();
+  },
+
+  async submitPartialPayment() {
+    const invoiceId = document.getElementById('ppInvoiceId').value;
+    const monto = document.getElementById('ppMonto').value;
+    const fechaPago = document.getElementById('ppFechaPago').value;
+    const referencia = document.getElementById('ppReferencia').value;
+    const comprobanteInput = document.getElementById('ppComprobante');
+    const errorDiv = document.getElementById('ppError');
+    const btn = document.getElementById('ppBtn');
+
+    errorDiv.classList.add('d-none');
+
+    if (!monto || parseFloat(monto) <= 0) {
+      errorDiv.textContent = 'Ingresa un monto válido.';
+      errorDiv.classList.remove('d-none');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Registrando...';
+
+    try {
+      const params = {
+        invoiceId,
+        montoParcial: monto,
+        fechaPago: fechaPago,
+        referencia: referencia
+      };
+
+      if (comprobanteInput.files[0]) {
+        params.comprobante = await this.fileToBase64(comprobanteInput.files[0]);
+        params.comprobanteFileName = comprobanteInput.files[0].name;
+      }
+
+      const data = await API.call('registerPartialPayment', params);
+
+      if (data.success) {
+        bootstrap.Modal.getInstance(document.getElementById('partialPaymentModal')).hide();
+        this.toast(data.data.message, 'success');
+        this.loadDashboard();
+      } else {
+        errorDiv.textContent = data.error;
+        errorDiv.classList.remove('d-none');
+      }
+    } catch (err) {
+      errorDiv.textContent = 'Error de conexión.';
+      errorDiv.classList.remove('d-none');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cash-stack"></i> Registrar Pago';
+    }
+  },
+
+  // --------------------------------------------------------
+  // HISTORIAL DE PAGOS
+  // --------------------------------------------------------
+  async viewPaymentsHistory(invoiceId) {
+    const modal = new bootstrap.Modal(document.getElementById('paymentsHistoryModal'));
+    const body = document.getElementById('paymentsHistoryBody');
+    body.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-success"></div></div>';
+    modal.show();
+
+    try {
+      const data = await API.call('getInvoicePayments', { invoiceId });
+      if (data.success) {
+        const payments = data.data.payments;
+        if (payments.length === 0) {
+          body.innerHTML = '<p class="text-center text-muted py-3">No hay pagos registrados.</p>';
+          return;
+        }
+
+        let html = `
+          <div class="mb-3 p-2 bg-light rounded">
+            <div class="d-flex justify-content-between">
+              <span>Total factura:</span><strong>$${formatMoney(data.data.totalFactura)}</strong>
+            </div>
+            <div class="d-flex justify-content-between">
+              <span>Total pagado:</span><strong class="text-success">$${formatMoney(data.data.totalPagado)}</strong>
+            </div>
+            <div class="d-flex justify-content-between">
+              <span>Saldo pendiente:</span><strong class="text-danger">$${formatMoney(data.data.saldoPendiente)}</strong>
+            </div>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-sm table-hover">
+              <thead class="table-light">
+                <tr><th>#</th><th>Fecha</th><th>Monto</th><th>Referencia</th><th>Registrado por</th><th>Comprobante</th></tr>
+              </thead>
+              <tbody>`;
+
+        payments.forEach(function(p, idx) {
+          html += `<tr>
+            <td>${idx + 1}</td>
+            <td>${p.fechaPago}</td>
+            <td>$${formatMoney(p.monto)}</td>
+            <td>${p.referencia || '-'}</td>
+            <td style="font-size:0.85em">${p.registradoPor}</td>
+            <td>${p.comprobanteUrl
+              ? '<a href="' + p.comprobanteUrl + '" target="_blank" class="btn btn-outline-primary btn-sm"><i class="bi bi-download"></i></a>'
+              : '-'}</td>
+          </tr>`;
+        });
+
+        html += '</tbody></table></div>';
+        body.innerHTML = html;
+      } else {
+        body.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+      }
+    } catch (err) {
+      body.innerHTML = '<div class="alert alert-danger">Error al cargar pagos.</div>';
     }
   },
 
@@ -843,7 +1139,8 @@ const API = {
     // Determinar si es GET o POST
     // POST solo para uploadInvoice (requiere enviar archivos base64 en body)
     // Todo lo demás va como GET (parámetros en URL, sobrevive al redirect 302)
-    const usePost = action === 'uploadInvoice';
+    const postActions = ['uploadInvoice', 'adminUploadInvoice', 'registerPartialPayment'];
+    const usePost = postActions.includes(action);
 
     try {
       let response;
@@ -924,7 +1221,8 @@ function statusBadge(estatus) {
     'Programado': 'bg-warning text-dark',
     'Pagado': 'bg-success',
     'Rechazado': 'bg-danger',
-    'En revisión': 'bg-info'
+    'En revisión': 'bg-info',
+    'Pago parcial': 'bg-primary'
   };
   const cls = map[estatus] || 'bg-secondary';
   return `<span class="badge ${cls}">${estatus}</span>`;
