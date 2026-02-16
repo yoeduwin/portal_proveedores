@@ -205,11 +205,13 @@ const App = {
       const xmlBase64 = await this.fileToBase64(xmlInput.files[0]);
       const pdfBase64 = pdfInput.files[0] ? await this.fileToBase64(pdfInput.files[0]) : null;
 
+      const fechaPago = document.getElementById('fechaPagoUpload').value;
       const params = {
         xmlFile: xmlBase64,
         xmlFileName: xmlInput.files[0].name,
         observaciones: obs
       };
+      if (fechaPago) params.fechaPagoProgramada = fechaPago;
 
       if (pdfBase64) {
         params.pdfFile = pdfBase64;
@@ -433,8 +435,10 @@ const App = {
             <i class="bi bi-file-earmark-pdf"></i> Descargar PDF</a> ` + footerHtml;
         }
 
-        // Botones admin: cambiar estatus, pago parcial, historial
+        // Botones admin
         if (State.user?.rol === 'admin') {
+          footerHtml = `<button class="btn btn-danger btn-sm" onclick="App.deleteInvoice('${inv.invoiceId}', '${inv.folioInterno}')">
+            <i class="bi bi-trash"></i> Eliminar</button> ` + footerHtml;
           footerHtml = `<button class="btn btn-info btn-sm" onclick="App.viewPaymentsHistory('${inv.invoiceId}')">
             <i class="bi bi-clock-history"></i> Pagos</button> ` + footerHtml;
           footerHtml = `<button class="btn btn-success btn-sm" onclick="App.openPartialPayment('${inv.invoiceId}', '${inv.folioInterno}', '${inv.total}')">
@@ -537,6 +541,9 @@ const App = {
               <button class="btn btn-outline-info btn-sm" onclick="App.viewPaymentsHistory('${inv.invoiceId}')" title="Historial de pagos">
                 <i class="bi bi-clock-history"></i>
               </button>
+              <button class="btn btn-outline-danger btn-sm" onclick="App.deleteInvoice('${inv.invoiceId}', '${inv.folioInterno}')" title="Eliminar factura">
+                <i class="bi bi-trash"></i>
+              </button>
             </td>
           </tr>`).join('');
         table.style.display = '';
@@ -605,6 +612,9 @@ const App = {
               </button>
               <button class="btn btn-outline-info btn-sm" onclick="App.viewPaymentsHistory('${inv.invoiceId}')" title="Historial pagos">
                 <i class="bi bi-clock-history"></i>
+              </button>
+              <button class="btn btn-outline-danger btn-sm" onclick="App.deleteInvoice('${inv.invoiceId}', '${inv.folioInterno}')" title="Eliminar">
+                <i class="bi bi-trash"></i>
               </button>
             </td>
           </tr>`).join('');
@@ -738,6 +748,7 @@ const App = {
       const data = await API.call('getSuppliers');
 
       if (data.success) {
+        this._suppliersCache = data.data.suppliers;
         body.innerHTML = data.data.suppliers.map(s => `
           <tr>
             <td><strong>${s.nombre}</strong></td>
@@ -748,8 +759,11 @@ const App = {
               ? '<span class="badge bg-success">Activo</span>'
               : '<span class="badge bg-secondary">Inactivo</span>'}</td>
             <td>${formatDateTime(s.createdAt)}</td>
-            <td>
-              <button class="btn btn-outline-danger btn-sm" onclick="App.deleteSupplier('${s.supplierId}', '${s.nombre.replace(/'/g, "\\'")}')" title="Eliminar proveedor">
+            <td class="text-nowrap">
+              <button class="btn btn-outline-warning btn-sm" onclick="App.openEditSupplier('${s.supplierId}')" title="Editar">
+                <i class="bi bi-pencil"></i>
+              </button>
+              <button class="btn btn-outline-danger btn-sm" onclick="App.deleteSupplier('${s.supplierId}', '${s.nombre.replace(/'/g, "\\'")}')" title="Eliminar">
                 <i class="bi bi-trash"></i>
               </button>
             </td>
@@ -875,12 +889,14 @@ const App = {
       const xmlBase64 = await this.fileToBase64(xmlInput.files[0]);
       const pdfBase64 = pdfInput.files[0] ? await this.fileToBase64(pdfInput.files[0]) : null;
 
+      const fechaPago = document.getElementById('adminFechaPagoUpload').value;
       const params = {
         supplierId,
         xmlFile: xmlBase64,
         xmlFileName: xmlInput.files[0].name,
         observaciones: obs
       };
+      if (fechaPago) params.fechaPagoProgramada = fechaPago;
       if (pdfBase64) {
         params.pdfFile = pdfBase64;
         params.pdfFileName = pdfInput.files[0].name;
@@ -892,6 +908,7 @@ const App = {
         successDiv.textContent = data.data.message;
         successDiv.classList.remove('d-none');
         if (data.data.acuse) {
+          State.lastAcuse = data.data.acuse;
           this.renderAdminAcuse(data.data.acuse);
         }
         document.getElementById('adminUploadForm').reset();
@@ -913,13 +930,22 @@ const App = {
     const container = document.getElementById('adminAcuseContainer');
     const body = document.getElementById('adminAcuseBody');
     body.innerHTML = `
-      <table class="table table-bordered mb-0">
-        <tr><th style="width:40%">Folio Interno</th><td><strong>${acuse.folioInterno}</strong></td></tr>
-        <tr><th>UUID</th><td style="font-size:0.85em; word-break:break-all;">${acuse.uuid}</td></tr>
-        <tr><th>RFC Emisor</th><td>${acuse.rfcEmisor}</td></tr>
-        <tr><th>Total</th><td><strong>$${formatMoney(acuse.total)} ${acuse.moneda}</strong></td></tr>
-        <tr><th>Pago Programado</th><td><strong class="text-success">${acuse.fechaPagoProgramada}</strong></td></tr>
-      </table>`;
+      <div id="acuseContent" style="padding: 20px; background: #f8f9fa;">
+        <div style="text-align: center; margin-bottom: 15px;">
+          <h5 style="color: #1a5632;">ACUSE DE RECIBO DE FACTURA</h5>
+          <p style="color: #666; margin: 0;">Ejecutiva Ambiental</p>
+        </div>
+        <table class="table table-bordered mb-0">
+          <tr><th style="width:40%">Folio Interno</th><td><strong>${acuse.folioInterno}</strong></td></tr>
+          <tr><th>UUID</th><td style="font-size:0.85em; word-break:break-all;">${acuse.uuid}</td></tr>
+          <tr><th>RFC Emisor</th><td>${acuse.rfcEmisor}</td></tr>
+          <tr><th>Nombre Emisor</th><td>${acuse.nombreEmisor || '-'}</td></tr>
+          <tr><th>Total</th><td><strong>$${formatMoney(acuse.total)} ${acuse.moneda}</strong></td></tr>
+          <tr><th>Fecha/Hora Recepción</th><td>${formatDateTime(acuse.fechaRecepcion)}</td></tr>
+          <tr><th>Pago Programado</th><td><strong class="text-success">${acuse.fechaPagoProgramada}</strong></td></tr>
+          <tr><th>Estatus</th><td><span class="badge bg-warning text-dark">${acuse.estatus}</span></td></tr>
+        </table>
+      </div>`;
     container.classList.remove('d-none');
     container.scrollIntoView({ behavior: 'smooth' });
   },
@@ -1006,6 +1032,93 @@ const App = {
     } finally {
       btn.disabled = false;
       btn.innerHTML = '<i class="bi bi-cash-stack"></i> Registrar Pago';
+    }
+  },
+
+  // --------------------------------------------------------
+  // ADMIN: ELIMINAR FACTURA
+  // --------------------------------------------------------
+  async deleteInvoice(invoiceId, folio) {
+    if (!confirm('¿Eliminar la factura "' + folio + '"?\n\nEsta acción no se puede deshacer. También se eliminan los pagos asociados.')) {
+      return;
+    }
+    this.showLoading('Eliminando factura...');
+    try {
+      const data = await API.call('deleteInvoice', { invoiceId });
+      if (data.success) {
+        this.toast(data.data.message, 'success');
+        // Cerrar modal de detalle si está abierto
+        const detailModal = bootstrap.Modal.getInstance(document.getElementById('invoiceDetailModal'));
+        if (detailModal) detailModal.hide();
+        this.loadDashboard();
+      } else {
+        this.toast(data.error, 'danger');
+      }
+    } catch (err) {
+      this.toast('Error de conexión.', 'danger');
+    } finally {
+      this.hideLoading();
+    }
+  },
+
+  // --------------------------------------------------------
+  // ADMIN: EDITAR PROVEEDOR
+  // --------------------------------------------------------
+  _suppliersCache: [],
+
+  async openEditSupplier(supplierId) {
+    const supplier = this._suppliersCache.find(s => s.supplierId === supplierId);
+    if (!supplier) {
+      this.toast('Proveedor no encontrado en cache. Recarga la página.', 'danger');
+      return;
+    }
+    document.getElementById('esSupplierId').value = supplierId;
+    document.getElementById('esNombre').value = supplier.nombre;
+    document.getElementById('esRFC').value = supplier.RFC;
+    document.getElementById('esCorreo').value = supplier.correo;
+    document.getElementById('esTelefono').value = supplier.telefono || '';
+    document.getElementById('esEstado').value = supplier.estado || 'activo';
+    document.getElementById('esPassword').value = '';
+    document.getElementById('editSupplierError').classList.add('d-none');
+
+    const modal = new bootstrap.Modal(document.getElementById('editSupplierModal'));
+    modal.show();
+  },
+
+  async submitEditSupplier() {
+    const supplierId = document.getElementById('esSupplierId').value;
+    const errorDiv = document.getElementById('editSupplierError');
+    const btn = document.getElementById('esBtn');
+
+    errorDiv.classList.add('d-none');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Guardando...';
+
+    try {
+      const data = await API.call('updateSupplier', {
+        supplierId,
+        nombre: document.getElementById('esNombre').value,
+        correoSupplier: document.getElementById('esCorreo').value,
+        telefono: document.getElementById('esTelefono').value,
+        estado: document.getElementById('esEstado').value,
+        newPassword: document.getElementById('esPassword').value
+      });
+
+      if (data.success) {
+        bootstrap.Modal.getInstance(document.getElementById('editSupplierModal')).hide();
+        this.toast(data.data.message, 'success');
+        this.loadSuppliers();
+        this.loadSupplierFilter();
+      } else {
+        errorDiv.textContent = data.error;
+        errorDiv.classList.remove('d-none');
+      }
+    } catch (err) {
+      errorDiv.textContent = 'Error de conexión.';
+      errorDiv.classList.remove('d-none');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-save"></i> Guardar Cambios';
     }
   },
 

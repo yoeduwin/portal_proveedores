@@ -149,6 +149,12 @@ function handleRequest(e, method) {
         return handleRegisterPartialPayment(params);
       case 'getInvoicePayments':
         return handleGetInvoicePayments(params);
+      case 'deleteInvoice':
+        requireAdmin(session);
+        return handleDeleteInvoice(params);
+      case 'updateSupplier':
+        requireAdmin(session);
+        return handleUpdateSupplier(params);
       default:
         return errorResponse('Acción no reconocida: ' + action, 400);
     }
@@ -309,9 +315,10 @@ function handleUploadInvoice(params, e) {
   if (isDuplicateUUID(cfdiData.uuid)) {
     return errorResponse('Esta factura ya fue registrada (UUID duplicado: ' + cfdiData.uuid + ').', 409);
   }
-  // Calcular fecha de pago programada
+  // Fecha de pago: usar la manual si viene, si no calcular automáticamente
   var fechaRecepcion = new Date();
-  var fechaPago = computePaymentDate(fechaRecepcion);
+  var fechaPagoManual = (params.fechaPagoProgramada || '').trim();
+  var fechaPago = fechaPagoManual ? new Date(fechaPagoManual + 'T12:00:00') : computePaymentDate(fechaRecepcion);
   // Generar folio interno
   var folioInterno = generateFolio();
   // Guardar archivos en Drive
@@ -688,7 +695,8 @@ function handleAdminUploadInvoice(params, e) {
     return errorResponse('Factura ya registrada (UUID duplicado: ' + cfdiData.uuid + ').', 409);
   }
   var fechaRecepcion = new Date();
-  var fechaPago = computePaymentDate(fechaRecepcion);
+  var fechaPagoManual = (params.fechaPagoProgramada || '').trim();
+  var fechaPago = fechaPagoManual ? new Date(fechaPagoManual + 'T12:00:00') : computePaymentDate(fechaRecepcion);
   var folioInterno = generateFolio();
   var driveFiles = saveFilesToDrive(supplier, xmlBase64, xmlFileName, pdfBase64, pdfFileName, folioInterno);
   var invoiceId = Utilities.getUuid();
@@ -917,6 +925,128 @@ function getPaymentsByInvoice(invoiceId) {
     }
   }
   return payments;
+}
+// ============================================================
+// HANDLERS - Admin: Eliminar factura
+// ============================================================
+function handleDeleteInvoice(params) {
+  var user = params._user;
+  var invoiceId = params.invoiceId;
+  if (!invoiceId) {
+    return errorResponse('ID de factura requerido.', 400);
+  }
+  var invoice = findInvoiceById(invoiceId);
+  if (!invoice) {
+    return errorResponse('Factura no encontrada.', 404);
+  }
+  // Eliminar pagos asociados
+  deletePaymentsByInvoice(invoiceId);
+  // Eliminar factura
+  deleteInvoiceRow(invoiceId);
+  logAudit(user.correo, 'DELETE_INVOICE', invoiceId,
+    'Factura eliminada: ' + invoice.folioInterno + ' | UUID: ' + invoice.uuid);
+  return successResponse({ message: 'Factura "' + invoice.folioInterno + '" eliminada.' });
+}
+// ============================================================
+// HANDLERS - Admin: Editar proveedor
+// ============================================================
+function handleUpdateSupplier(params) {
+  var user = params._user;
+  var supplierId = params.supplierId;
+  if (!supplierId) {
+    return errorResponse('ID de proveedor requerido.', 400);
+  }
+  var supplier = findSupplierById(supplierId);
+  if (!supplier) {
+    return errorResponse('Proveedor no encontrado.', 404);
+  }
+  var updates = {};
+  if (params.nombre) updates.nombre = params.nombre.trim();
+  if (params.telefono !== undefined) updates.telefono = params.telefono.trim();
+  if (params.correoSupplier) {
+    var nuevoCorreo = params.correoSupplier.trim().toLowerCase();
+    if (nuevoCorreo !== supplier.correo) {
+      var existingUser = findUserByEmail(nuevoCorreo);
+      if (existingUser) {
+        return errorResponse('Ya existe un usuario con el correo: ' + nuevoCorreo, 409);
+      }
+      updates.correo = nuevoCorreo;
+      // Actualizar correo también en USERS
+      updateUserEmail(supplierId, nuevoCorreo);
+    }
+  }
+  if (params.estado) updates.estado = params.estado;
+  updateSupplierRow(supplierId, updates);
+  // Si viene nueva contraseña, actualizarla
+  if (params.newPassword && params.newPassword.trim()) {
+    updateUserPassword(supplierId, params.newPassword.trim());
+  }
+  logAudit(user.correo, 'UPDATE_SUPPLIER', '', 'Proveedor editado: ' + (updates.nombre || supplier.nombre));
+  return successResponse({ message: 'Proveedor actualizado.' });
+}
+// ============================================================
+// Database helpers: Delete invoice / payments / update supplier
+// ============================================================
+function deleteInvoiceRow(invoiceId) {
+  var ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(CONFIG.SHEETS.INVOICES);
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === invoiceId) {
+      sheet.deleteRow(i + 1);
+      return;
+    }
+  }
+}
+function deletePaymentsByInvoice(invoiceId) {
+  var ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  var sheet = ss.getSheetByName('PAYMENTS');
+  if (!sheet) return;
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (data[i][1] === invoiceId) {
+      sheet.deleteRow(i + 1);
+    }
+  }
+}
+function updateSupplierRow(supplierId, updates) {
+  var ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(CONFIG.SHEETS.SUPPLIERS);
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0];
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === supplierId) {
+      for (var key in updates) {
+        var colIdx = headers.indexOf(key);
+        if (colIdx !== -1) {
+          sheet.getRange(i + 1, colIdx + 1).setValue(updates[key]);
+        }
+      }
+      return;
+    }
+  }
+}
+function updateUserEmail(supplierId, newEmail) {
+  var ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(CONFIG.SHEETS.USERS);
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][1] === supplierId) {
+      sheet.getRange(i + 1, 3).setValue(newEmail); // columna correo
+      return;
+    }
+  }
+}
+function updateUserPassword(supplierId, newPassword) {
+  var ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(CONFIG.SHEETS.USERS);
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][1] === supplierId) {
+      sheet.getRange(i + 1, 4).setValue(hashPassword(newPassword)); // columna hash
+      return;
+    }
+  }
 }
 // ============================================================
 // Database helpers: Delete supplier / user

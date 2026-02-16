@@ -96,6 +96,11 @@
                   <div class="form-text">Representación impresa de la factura (.pdf)</div>
                 </div>
                 <div class="mb-3">
+                  <label class="form-label fw-bold">Fecha de pago programada (opcional)</label>
+                  <input type="date" class="form-control" id="fechaPagoUpload">
+                  <div class="form-text">Si no se indica, se calcula en la siguiente quincena.</div>
+                </div>
+                <div class="mb-3">
                   <label class="form-label fw-bold">Observaciones (opcional)</label>
                   <textarea class="form-control" id="observaciones" rows="2" maxlength="500"
                     placeholder="Notas adicionales para CXP..."></textarea>
@@ -392,6 +397,11 @@
                   <input type="file" class="form-control" id="adminPdfFile" accept=".pdf">
                 </div>
                 <div class="mb-3">
+                  <label class="form-label fw-bold">Fecha de pago programada (opcional)</label>
+                  <input type="date" class="form-control" id="adminFechaPagoUpload">
+                  <div class="form-text">Si no se indica, se calcula en la siguiente quincena.</div>
+                </div>
+                <div class="mb-3">
                   <label class="form-label fw-bold">Observaciones (opcional)</label>
                   <textarea class="form-control" id="adminObservaciones" rows="2" maxlength="500"
                     placeholder="Notas adicionales..."></textarea>
@@ -410,6 +420,14 @@
                 <h5 class="mb-0"><i class="bi bi-check-circle"></i> Acuse de Recibo</h5>
               </div>
               <div class="card-body" id="adminAcuseBody"></div>
+              <div class="card-footer">
+                <button class="btn btn-outline-success btn-sm me-2" onclick="App.copyAcuse()">
+                  <i class="bi bi-clipboard"></i> Copiar como texto
+                </button>
+                <button class="btn btn-outline-primary btn-sm" onclick="App.downloadAcuse()">
+                  <i class="bi bi-download"></i> Descargar como imagen
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -453,6 +471,57 @@
                 <i class="bi bi-save"></i> Crear Proveedor
               </button>
             </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Editar Proveedor -->
+    <div class="modal fade" id="editSupplierModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header bg-ea-green text-white">
+            <h5 class="modal-title"><i class="bi bi-pencil"></i> Editar Proveedor</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div id="editSupplierError" class="alert alert-danger d-none"></div>
+            <input type="hidden" id="esSupplierId">
+            <div class="mb-3">
+              <label class="form-label">Nombre / Razón Social</label>
+              <input type="text" class="form-control" id="esNombre">
+            </div>
+            <div class="mb-3">
+              <label class="form-label">RFC</label>
+              <input type="text" class="form-control" id="esRFC" disabled>
+              <div class="form-text">El RFC no se puede modificar.</div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Correo electrónico</label>
+              <input type="email" class="form-control" id="esCorreo">
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Teléfono</label>
+              <input type="tel" class="form-control" id="esTelefono">
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Estado</label>
+              <select class="form-select" id="esEstado">
+                <option value="activo">Activo</option>
+                <option value="inactivo">Inactivo</option>
+              </select>
+            </div>
+            <hr>
+            <div class="mb-3">
+              <label class="form-label">Nueva contraseña (dejar vacío para no cambiar)</label>
+              <input type="password" class="form-control" id="esPassword" placeholder="Solo llenar si deseas cambiar">
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+            <button type="button" class="btn btn-ea-green" onclick="App.submitEditSupplier()" id="esBtn">
+              <i class="bi bi-save"></i> Guardar Cambios
+            </button>
           </div>
         </div>
       </div>
