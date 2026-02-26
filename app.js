@@ -64,39 +64,40 @@ const App = {
     if (role === 'supplier') {
       links.innerHTML = `
         <li class="nav-item">
-          <a class="nav-link active" href="#" onclick="App.navigate('upload')">
+          <a class="nav-link active" href="#" onclick="App.navigate('upload', event)">
             <i class="bi bi-cloud-upload"></i> Subir Factura
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="App.navigate('myInvoices')">
+          <a class="nav-link" href="#" onclick="App.navigate('myInvoices', event)">
             <i class="bi bi-receipt"></i> Mis Facturas
           </a>
         </li>`;
     } else if (role === 'admin') {
       links.innerHTML = `
         <li class="nav-item">
-          <a class="nav-link active" href="#" onclick="App.navigate('dashboard')">
+          <a class="nav-link active" href="#" onclick="App.navigate('dashboard', event)">
             <i class="bi bi-speedometer2"></i> Dashboard
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="App.navigate('suppliers')">
+          <a class="nav-link" href="#" onclick="App.navigate('suppliers', event)">
             <i class="bi bi-people"></i> Proveedores
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="App.navigate('adminUpload')">
+          <a class="nav-link" href="#" onclick="App.navigate('adminUpload', event)">
             <i class="bi bi-cloud-upload"></i> Subir Factura
           </a>
         </li>`;
     }
   },
 
-  navigate(viewId) {
+  navigate(viewId, evt) {
     // Actualizar nav links activos
     document.querySelectorAll('#navLinks .nav-link').forEach(l => l.classList.remove('active'));
-    event.target.closest('.nav-link')?.classList.add('active');
+    if (evt?.preventDefault) evt.preventDefault();
+    evt?.target?.closest('.nav-link')?.classList.add('active');
 
     this.showView(viewId);
 
@@ -319,7 +320,7 @@ const App = {
   },
 
   downloadAcuse() {
-    const el = document.getElementById('acuseContent');
+    const el = document.getElementById('acuseContent') || document.getElementById('adminAcuseContent');
     if (!el) return;
 
     html2canvas(el, { scale: 2, backgroundColor: '#ffffff' }).then(canvas => {
@@ -753,13 +754,20 @@ const App = {
           <tr>
             <td><strong>${s.nombre}</strong></td>
             <td>${s.RFC}</td>
-            <td>${s.correo}</td>
+            <td>
+              ${(s.emails && s.emails.length
+                ? s.emails.map(c => `<div class="small">${c}</div>`).join('')
+                : (s.correo || '-'))}
+            </td>
             <td>${s.telefono || '-'}</td>
             <td>${s.estado === 'activo'
               ? '<span class="badge bg-success">Activo</span>'
               : '<span class="badge bg-secondary">Inactivo</span>'}</td>
             <td>${formatDateTime(s.createdAt)}</td>
             <td class="text-nowrap">
+              <button class="btn btn-outline-info btn-sm" onclick="App.openSupplierUsers('${s.supplierId}')" title="Usuarios">
+                <i class="bi bi-person-lines-fill"></i>
+              </button>
               <button class="btn btn-outline-warning btn-sm" onclick="App.openEditSupplier('${s.supplierId}')" title="Editar">
                 <i class="bi bi-pencil"></i>
               </button>
@@ -791,6 +799,7 @@ const App = {
         nombre: document.getElementById('nsNombre').value,
         rfc: document.getElementById('nsRFC').value.toUpperCase(),
         correoSupplier: document.getElementById('nsCorreo').value,
+        correosSupplier: document.getElementById('nsCorreo').value,
         telefono: document.getElementById('nsTelefono').value,
         passwordSupplier: document.getElementById('nsPassword').value
       });
@@ -835,6 +844,83 @@ const App = {
       this.toast('Error de conexión.', 'danger');
     } finally {
       this.hideLoading();
+    }
+  },
+
+  async openSupplierUsers(supplierId) {
+    const modalEl = document.getElementById('supplierUsersModal');
+    const body = document.getElementById('suUsersBody');
+    const err = document.getElementById('suError');
+    err.classList.add('d-none');
+    body.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Cargando...</td></tr>';
+    document.getElementById('suCorreo').value = '';
+    document.getElementById('suPassword').value = '';
+    document.getElementById('suSupplierId').value = supplierId;
+
+    const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+    modal.show();
+
+    try {
+      const data = await API.call('getSupplierUsers', { supplierId });
+      if (!data.success) {
+        err.textContent = data.error || 'No se pudo cargar usuarios.';
+        err.classList.remove('d-none');
+        return;
+      }
+
+      document.getElementById('suSupplierName').textContent = data.data.supplier.nombre + ' (' + data.data.supplier.RFC + ')';
+      const users = data.data.users || [];
+      if (!users.length) {
+        body.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Sin usuarios.</td></tr>';
+      } else {
+        body.innerHTML = users.map(u => `
+          <tr>
+            <td>${u.correo}</td>
+            <td>${u.activo === 'true' || u.activo === true ? '<span class="badge bg-success">Sí</span>' : '<span class="badge bg-secondary">No</span>'}</td>
+            <td>${u.lastLogin ? formatDateTime(u.lastLogin) : '-'}</td>
+            <td>${u.createdAt ? formatDateTime(u.createdAt) : '-'}</td>
+          </tr>`).join('');
+      }
+    } catch (errLoad) {
+      err.textContent = 'Error de conexión al cargar usuarios.';
+      err.classList.remove('d-none');
+    }
+  },
+
+  async submitCreateSupplierUser() {
+    const supplierId = document.getElementById('suSupplierId').value;
+    const correo = document.getElementById('suCorreo').value.trim();
+    const password = document.getElementById('suPassword').value;
+    const btn = document.getElementById('suBtn');
+    const err = document.getElementById('suError');
+
+    err.classList.add('d-none');
+    if (!supplierId || !correo || !password) {
+      err.textContent = 'Completa correo y contraseña.';
+      err.classList.remove('d-none');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Creando...';
+    try {
+      const data = await API.call('createSupplierUser', { supplierId, correo, password });
+      if (data.success) {
+        this.toast(data.data.message, 'success');
+        document.getElementById('suCorreo').value = '';
+        document.getElementById('suPassword').value = '';
+        await this.openSupplierUsers(supplierId);
+        this.loadSuppliers();
+      } else {
+        err.textContent = data.error || 'No se pudo crear el usuario.';
+        err.classList.remove('d-none');
+      }
+    } catch (errCreate) {
+      err.textContent = 'Error de conexión al crear usuario.';
+      err.classList.remove('d-none');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-person-plus"></i> Crear usuario';
     }
   },
 
@@ -930,7 +1016,7 @@ const App = {
     const container = document.getElementById('adminAcuseContainer');
     const body = document.getElementById('adminAcuseBody');
     body.innerHTML = `
-      <div id="acuseContent" style="padding: 20px; background: #f8f9fa;">
+      <div id="adminAcuseContent" style="padding: 20px; background: #f8f9fa;">
         <div style="text-align: center; margin-bottom: 15px;">
           <h5 style="color: #1a5632;">ACUSE DE RECIBO DE FACTURA</h5>
           <p style="color: #666; margin: 0;">Ejecutiva Ambiental</p>
@@ -1252,7 +1338,7 @@ const API = {
     // Determinar si es GET o POST
     // POST solo para uploadInvoice (requiere enviar archivos base64 en body)
     // Todo lo demás va como GET (parámetros en URL, sobrevive al redirect 302)
-    const postActions = ['uploadInvoice', 'adminUploadInvoice', 'registerPartialPayment'];
+    const postActions = ['uploadInvoice', 'adminUploadInvoice', 'registerPartialPayment', 'createSupplierUser'];
     const usePost = postActions.includes(action);
 
     try {
@@ -1261,7 +1347,8 @@ const API = {
       if (!usePost) {
         // GET: parámetros en la URL, funciona con el redirect 302 de Apps Script
         const queryString = Object.entries(params)
-          .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+          .filter(([, v]) => v !== undefined && v !== null)
+          .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
           .join('&');
         response = await fetch(`${API_URL}?${queryString}`, {
           method: 'GET',
@@ -1277,6 +1364,10 @@ const API = {
           headers: { 'Content-Type': 'text/plain' },
           body: JSON.stringify(params)
         });
+      }
+
+      if (!response.ok) {
+        throw new Error('Error HTTP ' + response.status + ': ' + response.statusText);
       }
 
       const text = await response.text();

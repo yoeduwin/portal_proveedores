@@ -352,7 +352,7 @@
                 <tr>
                   <th>Nombre</th>
                   <th>RFC</th>
-                  <th>Correo</th>
+                  <th>Correos</th>
                   <th>Teléfono</th>
                   <th>Estado</th>
                   <th>Creado</th>
@@ -456,7 +456,8 @@
               </div>
               <div class="mb-3">
                 <label class="form-label">Correo electrónico <span class="text-danger">*</span></label>
-                <input type="email" class="form-control" id="nsCorreo" required>
+                <input type="text" class="form-control" id="nsCorreo" required placeholder="correo1@empresa.com, correo2@empresa.com">
+                <div class="form-text">Puedes capturar uno o varios correos separados por coma o punto y coma.</div>
               </div>
               <div class="mb-3">
                 <label class="form-label">Teléfono</label>
@@ -521,6 +522,53 @@
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
             <button type="button" class="btn btn-ea-green" onclick="App.submitEditSupplier()" id="esBtn">
               <i class="bi bi-save"></i> Guardar Cambios
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+
+    <!-- Modal: Usuarios del Proveedor -->
+    <div class="modal fade" id="supplierUsersModal" tabindex="-1">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header bg-ea-green text-white">
+            <h5 class="modal-title"><i class="bi bi-person-lines-fill"></i> Usuarios del proveedor</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div id="suError" class="alert alert-danger d-none"></div>
+            <input type="hidden" id="suSupplierId">
+            <h6 id="suSupplierName" class="mb-3"></h6>
+            <div class="table-responsive">
+              <table class="table table-sm table-hover">
+                <thead class="table-light">
+                  <tr>
+                    <th>Correo</th>
+                    <th>Activo</th>
+                    <th>Último acceso</th>
+                    <th>Creado</th>
+                  </tr>
+                </thead>
+                <tbody id="suUsersBody"></tbody>
+              </table>
+            </div>
+            <hr>
+            <h6>Agregar usuario</h6>
+            <div class="row g-2">
+              <div class="col-md-7">
+                <input type="email" class="form-control" id="suCorreo" placeholder="nuevo@proveedor.com">
+              </div>
+              <div class="col-md-5">
+                <input type="password" class="form-control" id="suPassword" placeholder="Contraseña (mín. 6)">
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+            <button type="button" class="btn btn-ea-green" id="suBtn" onclick="App.submitCreateSupplierUser()">
+              <i class="bi bi-person-plus"></i> Crear usuario
             </button>
           </div>
         </div>
