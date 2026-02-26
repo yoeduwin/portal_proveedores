@@ -64,39 +64,40 @@ const App = {
     if (role === 'supplier') {
       links.innerHTML = `
         <li class="nav-item">
-          <a class="nav-link active" href="#" onclick="App.navigate('upload')">
+          <a class="nav-link active" href="#" onclick="App.navigate('upload', event)">
             <i class="bi bi-cloud-upload"></i> Subir Factura
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="App.navigate('myInvoices')">
+          <a class="nav-link" href="#" onclick="App.navigate('myInvoices', event)">
             <i class="bi bi-receipt"></i> Mis Facturas
           </a>
         </li>`;
     } else if (role === 'admin') {
       links.innerHTML = `
         <li class="nav-item">
-          <a class="nav-link active" href="#" onclick="App.navigate('dashboard')">
+          <a class="nav-link active" href="#" onclick="App.navigate('dashboard', event)">
             <i class="bi bi-speedometer2"></i> Dashboard
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="App.navigate('suppliers')">
+          <a class="nav-link" href="#" onclick="App.navigate('suppliers', event)">
             <i class="bi bi-people"></i> Proveedores
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="App.navigate('adminUpload')">
+          <a class="nav-link" href="#" onclick="App.navigate('adminUpload', event)">
             <i class="bi bi-cloud-upload"></i> Subir Factura
           </a>
         </li>`;
     }
   },
 
-  navigate(viewId) {
+  navigate(viewId, evt) {
     // Actualizar nav links activos
     document.querySelectorAll('#navLinks .nav-link').forEach(l => l.classList.remove('active'));
-    event.target.closest('.nav-link')?.classList.add('active');
+    if (evt?.preventDefault) evt.preventDefault();
+    evt?.target?.closest('.nav-link')?.classList.add('active');
 
     this.showView(viewId);
 
@@ -319,7 +320,7 @@ const App = {
   },
 
   downloadAcuse() {
-    const el = document.getElementById('acuseContent');
+    const el = document.getElementById('acuseContent') || document.getElementById('adminAcuseContent');
     if (!el) return;
 
     html2canvas(el, { scale: 2, backgroundColor: '#ffffff' }).then(canvas => {
@@ -930,7 +931,7 @@ const App = {
     const container = document.getElementById('adminAcuseContainer');
     const body = document.getElementById('adminAcuseBody');
     body.innerHTML = `
-      <div id="acuseContent" style="padding: 20px; background: #f8f9fa;">
+      <div id="adminAcuseContent" style="padding: 20px; background: #f8f9fa;">
         <div style="text-align: center; margin-bottom: 15px;">
           <h5 style="color: #1a5632;">ACUSE DE RECIBO DE FACTURA</h5>
           <p style="color: #666; margin: 0;">Ejecutiva Ambiental</p>
@@ -1261,7 +1262,8 @@ const API = {
       if (!usePost) {
         // GET: parámetros en la URL, funciona con el redirect 302 de Apps Script
         const queryString = Object.entries(params)
-          .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+          .filter(([, v]) => v !== undefined && v !== null)
+          .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
           .join('&');
         response = await fetch(`${API_URL}?${queryString}`, {
           method: 'GET',
@@ -1277,6 +1279,10 @@ const API = {
           headers: { 'Content-Type': 'text/plain' },
           body: JSON.stringify(params)
         });
+      }
+
+      if (!response.ok) {
+        throw new Error('Error HTTP ' + response.status + ': ' + response.statusText);
       }
 
       const text = await response.text();
