@@ -155,6 +155,12 @@ function handleRequest(e, method) {
       case 'updateSupplier':
         requireAdmin(session);
         return handleUpdateSupplier(params);
+      case 'createSupplierUser':
+        requireAdmin(session);
+        return handleCreateSupplierUser(params);
+      case 'getSupplierUsers':
+        requireAdmin(session);
+        return handleGetSupplierUsers(params);
       default:
         return errorResponse('Acción no reconocida: ' + action, 400);
     }
@@ -426,6 +432,17 @@ function handleGetProfile(params) {
 // ============================================================
 function handleGetSuppliers(params) {
   var suppliers = getAllSuppliers();
+  var usersBySupplier = getSupplierUsersMap();
+
+  suppliers = suppliers.map(function(supplier) {
+    var users = usersBySupplier[supplier.supplierId] || [];
+    var emails = users.map(function(u) { return u.correo; });
+    return Object.assign({}, supplier, {
+      emails: emails,
+      usersCount: users.length
+    });
+  });
+
   return successResponse({ suppliers: suppliers });
 }
 // ============================================================
@@ -579,58 +596,72 @@ function handleGetDashboardStats(params) {
 function handleCreateSupplier(params) {
   var nombre = (params.nombre || '').trim();
   var rfc = (params.rfc || '').trim().toUpperCase();
-  var correo = (params.correoSupplier || '').trim().toLowerCase();
   var telefono = (params.telefono || '').trim();
   var password = (params.passwordSupplier || '').trim();
-  if (!nombre || !rfc || !correo || !password) {
-    return errorResponse('Nombre, RFC, correo y contraseña son obligatorios.', 400);
+
+  var emailsRaw = params.correosSupplier || params.correoSupplier || '';
+  var emails = normalizeEmailList(emailsRaw);
+
+  if (!nombre || !rfc || emails.length === 0 || !password) {
+    return errorResponse('Nombre, RFC, al menos un correo y contraseña son obligatorios.', 400);
   }
+
   // Verificar que no exista RFC duplicado
   var existingSupplier = findSupplierByRFC(rfc);
   if (existingSupplier) {
     return errorResponse('Ya existe un proveedor con el RFC: ' + rfc, 409);
   }
-  // Verificar que no exista correo duplicado
-  var existingUser = findUserByEmail(correo);
-  if (existingUser) {
-    return errorResponse('Ya existe un usuario con el correo: ' + correo, 409);
+
+  // Verificar correos duplicados contra usuarios existentes
+  for (var i = 0; i < emails.length; i++) {
+    var existingUser = findUserByEmail(emails[i]);
+    if (existingUser) {
+      return errorResponse('Ya existe un usuario con el correo: ' + emails[i], 409);
+    }
   }
+
   // Crear carpeta en Drive
   var rootFolder = DriveApp.getFolderById(CONFIG.DRIVE_ROOT_FOLDER_ID);
   var supplierFolder = rootFolder.createFolder(rfc + ' - ' + nombre);
-  // Crear registro de proveedor
+
+  // Crear registro de proveedor (correo principal = primer correo)
   var supplierId = Utilities.getUuid();
   var supplierData = {
     supplierId: supplierId,
     nombre: nombre,
     RFC: rfc,
-    correo: correo,
+    correo: emails[0],
     telefono: telefono,
     estado: 'activo',
     carpetaDriveId: supplierFolder.getId(),
     createdAt: new Date().toISOString()
   };
   insertSupplier(supplierData);
-  // Crear usuario para el proveedor
-  var userId = Utilities.getUuid();
-  var userData = {
-    userId: userId,
-    supplierId: supplierId,
-    correo: correo,
-    hash: hashPassword(password),
-    rol: 'supplier',
-    activo: 'true',
-    lastLogin: '',
-    tokenSesion: '',
-    tokenExpiry: '',
-    createdAt: new Date().toISOString()
-  };
-  insertUser(userData);
+
+  // Crear usuarios para el proveedor (múltiples correos)
+  for (var j = 0; j < emails.length; j++) {
+    insertUser({
+      userId: Utilities.getUuid(),
+      supplierId: supplierId,
+      correo: emails[j],
+      hash: hashPassword(password),
+      rol: 'supplier',
+      activo: 'true',
+      lastLogin: '',
+      tokenSesion: '',
+      tokenExpiry: '',
+      createdAt: new Date().toISOString()
+    });
+  }
+
   // Log de auditoría
-  logAudit(params._user.correo, 'CREATE_SUPPLIER', '', 'Proveedor creado: ' + nombre + ' (' + rfc + ')');
+  logAudit(params._user.correo, 'CREATE_SUPPLIER', '',
+    'Proveedor creado: ' + nombre + ' (' + rfc + ') | Correos: ' + emails.join(', '));
+
   return successResponse({
-    message: 'Proveedor creado exitosamente.',
-    supplier: supplierData
+    message: 'Proveedor creado exitosamente con ' + emails.length + ' usuario(s).',
+    supplier: supplierData,
+    emails: emails
   });
 }
 // ============================================================
@@ -872,7 +903,7 @@ function handleGetInvoicePayments(params) {
 // Email: Notificar pago parcial al proveedor
 // ============================================================
 function sendPartialPaymentToSupplier(invoice, supplier, montoPago, totalPagado, totalFactura, referencia) {
-  if (!supplier || !supplier.correo) return;
+  if (!supplier) return;
   var saldo = totalFactura - totalPagado;
   var subject = CONFIG.COMPANY_NAME + ' - Pago parcial registrado: ' + invoice.folioInterno;
   var body = 'Estimado proveedor ' + supplier.nombre + ',\n\n' +
@@ -887,7 +918,7 @@ function sendPartialPaymentToSupplier(invoice, supplier, montoPago, totalPagado,
     (saldo <= 0.01 ? 'Su factura ha sido liquidada al 100%.\n\n' : '') +
     'Consulta el detalle en: ' + CONFIG.FRONTEND_URL + '\n\n' +
     'Saludos,\n' + CONFIG.COMPANY_NAME;
-  MailApp.sendEmail(supplier.correo, subject, body);
+  sendMailToSupplierUsers(supplier.supplierId, supplier.correo, subject, body);
 }
 // ============================================================
 // Database helpers: PAYMENTS sheet
@@ -971,15 +1002,14 @@ function handleUpdateSupplier(params) {
         return errorResponse('Ya existe un usuario con el correo: ' + nuevoCorreo, 409);
       }
       updates.correo = nuevoCorreo;
-      // Actualizar correo también en USERS
-      updateUserEmail(supplierId, nuevoCorreo);
+      // En modo multiusuario solo actualizamos el correo principal del proveedor.
     }
   }
   if (params.estado) updates.estado = params.estado;
   updateSupplierRow(supplierId, updates);
   // Si viene nueva contraseña, actualizarla
   if (params.newPassword && params.newPassword.trim()) {
-    updateUserPassword(supplierId, params.newPassword.trim());
+    updateUserPasswordBySupplier(supplierId, params.newPassword.trim());
   }
   logAudit(user.correo, 'UPDATE_SUPPLIER', '', 'Proveedor editado: ' + (updates.nombre || supplier.nombre));
   return successResponse({ message: 'Proveedor actualizado.' });
@@ -1037,16 +1067,139 @@ function updateUserEmail(supplierId, newEmail) {
     }
   }
 }
-function updateUserPassword(supplierId, newPassword) {
+function updateUserPasswordBySupplier(supplierId, newPassword) {
   var ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   var sheet = ss.getSheetByName(CONFIG.SHEETS.USERS);
   var data = sheet.getDataRange().getValues();
+  var newHash = hashPassword(newPassword);
   for (var i = 1; i < data.length; i++) {
     if (data[i][1] === supplierId) {
-      sheet.getRange(i + 1, 4).setValue(hashPassword(newPassword)); // columna hash
-      return;
+      sheet.getRange(i + 1, 4).setValue(newHash); // columna hash
     }
   }
+}
+
+function normalizeEmailList(rawEmails) {
+  var parts = (rawEmails || '').toString().split(/[;,\n]/);
+  var unique = {};
+  var emails = [];
+  parts.forEach(function(part) {
+    var email = (part || '').trim().toLowerCase();
+    if (!email) return;
+    if (!isValidEmail(email)) return;
+    if (!unique[email]) {
+      unique[email] = true;
+      emails.push(email);
+    }
+  });
+  return emails;
+}
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || '');
+}
+
+function getUsersBySupplierId(supplierId) {
+  var ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(CONFIG.SHEETS.USERS);
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0];
+  var users = [];
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][1] === supplierId) {
+      var obj = {};
+      for (var j = 0; j < headers.length; j++) obj[headers[j]] = data[i][j];
+      users.push(obj);
+    }
+  }
+  return users;
+}
+
+function getSupplierUsersMap() {
+  var ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(CONFIG.SHEETS.USERS);
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0];
+  var map = {};
+  for (var i = 1; i < data.length; i++) {
+    var supplierId = data[i][1];
+    if (!supplierId) continue;
+    if (!map[supplierId]) map[supplierId] = [];
+    var obj = {};
+    for (var j = 0; j < headers.length; j++) obj[headers[j]] = data[i][j];
+    map[supplierId].push(obj);
+  }
+  return map;
+}
+
+function handleGetSupplierUsers(params) {
+  var supplierId = (params.supplierId || '').trim();
+  if (!supplierId) {
+    return errorResponse('ID de proveedor requerido.', 400);
+  }
+  var supplier = findSupplierById(supplierId);
+  if (!supplier) {
+    return errorResponse('Proveedor no encontrado.', 404);
+  }
+  var users = getUsersBySupplierId(supplierId).map(function(u) {
+    return {
+      userId: u.userId,
+      correo: u.correo,
+      rol: u.rol,
+      activo: u.activo,
+      lastLogin: u.lastLogin,
+      createdAt: u.createdAt
+    };
+  });
+  return successResponse({ users: users, supplier: supplier });
+}
+
+function handleCreateSupplierUser(params) {
+  var admin = params._user;
+  var supplierId = (params.supplierId || '').trim();
+  var correo = (params.correo || '').trim().toLowerCase();
+  var password = (params.password || '').trim();
+
+  if (!supplierId || !correo || !password) {
+    return errorResponse('supplierId, correo y password son obligatorios.', 400);
+  }
+  if (!isValidEmail(correo)) {
+    return errorResponse('Correo electrónico no válido.', 400);
+  }
+  if (password.length < 6) {
+    return errorResponse('La contraseña debe tener al menos 6 caracteres.', 400);
+  }
+
+  var supplier = findSupplierById(supplierId);
+  if (!supplier) {
+    return errorResponse('Proveedor no encontrado.', 404);
+  }
+
+  var existingUser = findUserByEmail(correo);
+  if (existingUser) {
+    return errorResponse('Ya existe un usuario con el correo: ' + correo, 409);
+  }
+
+  insertUser({
+    userId: Utilities.getUuid(),
+    supplierId: supplierId,
+    correo: correo,
+    hash: hashPassword(password),
+    rol: 'supplier',
+    activo: 'true',
+    lastLogin: '',
+    tokenSesion: '',
+    tokenExpiry: '',
+    createdAt: new Date().toISOString()
+  });
+
+  logAudit(admin.correo, 'CREATE_SUPPLIER_USER', '',
+    'Usuario agregado a proveedor ' + supplier.nombre + ': ' + correo);
+
+  return successResponse({
+    message: 'Usuario creado exitosamente para ' + supplier.nombre + '.',
+    user: { correo: correo, supplierId: supplierId }
+  });
 }
 // ============================================================
 // Database helpers: Delete supplier / user
@@ -1073,6 +1226,24 @@ function deleteUserBySupplier(supplierId) {
     }
   }
 }
+function sendMailToSupplierUsers(supplierId, fallbackEmail, subject, body) {
+  var recipients = [];
+  if (supplierId) {
+    var users = getUsersBySupplierId(supplierId);
+    recipients = users
+      .filter(function(u) { return u.activo === 'true' || u.activo === true; })
+      .map(function(u) { return (u.correo || '').toString().trim().toLowerCase(); })
+      .filter(function(v, i, arr) { return !!v && arr.indexOf(v) === i; });
+  }
+
+  if (recipients.length === 0 && fallbackEmail) {
+    recipients = [fallbackEmail];
+  }
+  if (recipients.length === 0) return;
+
+  MailApp.sendEmail(recipients.join(','), subject, body);
+}
+
 // ============================================================
 // REGISTRO DE ADMIN - Ejecutar desde el editor de Apps Script
 // ============================================================
