@@ -461,9 +461,13 @@ const App = {
   // ADMIN: DASHBOARD
   // --------------------------------------------------------
   async loadDashboard() {
-    this.loadDashboardStats();
-    this.loadSupplierFilter();
-    this.loadAllInvoices();
+    // Cargar en paralelo con Promise.allSettled para que un fallo
+    // en una sección no bloquee las demás
+    await Promise.allSettled([
+      this.loadDashboardStats(),
+      this.loadSupplierFilter(),
+      this.loadAllInvoices()
+    ]);
   },
 
   async loadDashboardStats() {
@@ -1317,71 +1321,110 @@ const App = {
 // ============================================================
 const API = {
   /**
-   * Realiza una llamada a la API de Apps Script.
+   * Realiza una llamada a la API de Apps Script con reintentos y timeout.
    *
-   * CORS en Apps Script:
-   * - Las Web Apps publicadas como "Cualquier persona" responden
-   *   correctamente a fetch() desde cualquier origen.
-   * - Se debe usar la URL /exec, NO /dev.
-   * - Los datos se envían como parámetros de URL para GET
-   *   o como JSON en POST.
+   * Google Apps Script es propenso a fallos transitorios (cold starts, throttling).
+   * Esta función reintenta automáticamente hasta MAX_RETRIES veces con backoff
+   * exponencial antes de propagar el error al usuario.
+   *
+   * Configuración:
+   *   TIMEOUT_MS   : tiempo máximo por intento (ms)
+   *   MAX_RETRIES  : número máximo de reintentos tras el primer fallo
+   *   RETRY_DELAY  : delay base en ms (se duplica en cada reintento)
    */
+  TIMEOUT_MS: 30000,
+  MAX_RETRIES: 3,
+  RETRY_DELAY: 1500,
+
   async call(action, params) {
     params = params || {};
     params.action = action;
 
-    // Agregar token si existe
     if (State.token) {
       params.token = State.token;
     }
 
-    // Determinar si es GET o POST
-    // POST solo para uploadInvoice (requiere enviar archivos base64 en body)
-    // Todo lo demás va como GET (parámetros en URL, sobrevive al redirect 302)
+    // POST solo para acciones que envían archivos base64 en body
     const postActions = ['uploadInvoice', 'adminUploadInvoice', 'registerPartialPayment', 'createSupplierUser'];
     const usePost = postActions.includes(action);
 
-    try {
-      let response;
+    let lastError;
 
-      if (!usePost) {
-        // GET: parámetros en la URL, funciona con el redirect 302 de Apps Script
-        const queryString = Object.entries(params)
-          .filter(([, v]) => v !== undefined && v !== null)
-          .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
-          .join('&');
-        response = await fetch(`${API_URL}?${queryString}`, {
-          method: 'GET',
-          redirect: 'follow'
-        });
-      } else {
-        // POST directo a /exec con Content-Type text/plain (evita preflight CORS).
-        // Apps Script procesa el body en doPost() y el 302 redirect solo
-        // aplica para entregar la respuesta, no afecta el procesamiento.
-        response = await fetch(API_URL, {
-          method: 'POST',
-          redirect: 'follow',
-          headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify(params)
-        });
+    for (let attempt = 0; attempt <= this.MAX_RETRIES; attempt++) {
+      // Esperar antes de reintentar (excepto en el primer intento)
+      if (attempt > 0) {
+        const delay = this.RETRY_DELAY * Math.pow(2, attempt - 1);
+        console.warn(`API [${action}] reintento ${attempt}/${this.MAX_RETRIES} en ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
       }
 
-      if (!response.ok) {
-        throw new Error('Error HTTP ' + response.status + ': ' + response.statusText);
-      }
-
-      const text = await response.text();
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.TIMEOUT_MS);
 
       try {
-        return JSON.parse(text);
-      } catch (parseErr) {
-        console.error('Response no es JSON:', text.substring(0, 500));
-        return { success: false, error: 'Respuesta inválida del servidor.' };
+        let response;
+
+        if (!usePost) {
+          const queryString = Object.entries(params)
+            .filter(([, v]) => v !== undefined && v !== null)
+            .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+            .join('&');
+          response = await fetch(`${API_URL}?${queryString}`, {
+            method: 'GET',
+            redirect: 'follow',
+            signal: controller.signal
+          });
+        } else {
+          response = await fetch(API_URL, {
+            method: 'POST',
+            redirect: 'follow',
+            headers: { 'Content-Type': 'text/plain' },
+            body: JSON.stringify(params),
+            signal: controller.signal
+          });
+        }
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          throw new Error('Error HTTP ' + response.status + ': ' + response.statusText);
+        }
+
+        const text = await response.text();
+
+        try {
+          return JSON.parse(text);
+        } catch (parseErr) {
+          console.error('Response no es JSON:', text.substring(0, 500));
+          return { success: false, error: 'Respuesta inválida del servidor.' };
+        }
+
+      } catch (fetchErr) {
+        clearTimeout(timeoutId);
+
+        const isAbort = fetchErr.name === 'AbortError';
+        const isTransient = isAbort ||
+          fetchErr.message.includes('Failed to fetch') ||
+          fetchErr.message.includes('NetworkError') ||
+          fetchErr.message.includes('Load failed') ||
+          fetchErr.message.includes('502') ||
+          fetchErr.message.includes('503') ||
+          fetchErr.message.includes('504');
+
+        lastError = isAbort
+          ? new Error('Tiempo de espera agotado. El servidor tardó demasiado en responder.')
+          : fetchErr;
+
+        console.error(`API [${action}] intento ${attempt + 1} fallido:`, fetchErr.message);
+
+        // Solo reintentar errores transitorios
+        if (!isTransient || attempt >= this.MAX_RETRIES) {
+          break;
+        }
       }
-    } catch (fetchErr) {
-      console.error('Fetch error:', fetchErr);
-      throw fetchErr;
     }
+
+    throw lastError;
   }
 };
 
